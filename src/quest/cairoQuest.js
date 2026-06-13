@@ -9,6 +9,8 @@ import { spawnSync } from 'child_process';
 
 export class CairoQuest extends BaseQuest {
 
+    #cairoquest for ngquest
+
     static find(questName) {
         const directoryPath = path.join(mainPath(), "campaigns/cairo-directory.json");
         const campaigns = JSON.parse(fs.readFileSync(directoryPath));
