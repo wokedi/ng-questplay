@@ -1,86 +1,248 @@
-import chalk from 'chalk';
-import child_process from 'child_process';
-import fs from 'fs';
-import path from 'path';
-import { navigateToMainDirectory, readSettings, writeSettings } from './utils/navigation.js';
-import { QuestDownloader } from './utils/downloader.js';
-import { simpleGit } from 'simple-git';
+import chalk from "chalk";
+import fs from "fs";
+import path from "path";
+
+import { simpleGit } from "simple-git";
 
 import {
-  UNCOMMITTED_FILES_BEFORE_UPDATE_MESSAGE
-} from './utils/messages.js';
-import { isLatestVersion, remoteVersion } from './utils/versions.js';
+  navigateToMainDirectory,
+  readSettings,
+  writeSettings,
+} from "./utils/navigation.js";
+
+import { QuestDownloader } from "./utils/downloader.js";
+
+import {
+  UNCOMMITTED_FILES_BEFORE_UPDATE_MESSAGE,
+} from "./utils/messages.js";
+
+import {
+  isLatestVersion,
+  remoteVersion,
+} from "./utils/versions.js";
 
 const git = simpleGit();
 
-export async function updateQuestplay(newRemote = null) {
+export async function updateQuestplay(
+  newRemote = null
+) {
 
-  navigateToMainDirectory();
-  console.log();
+  try {
+
+    navigateToMainDirectory();
+
+    console.log();
+
+    const settings = await prepareSettings(
+      newRemote
+    );
+
+    const { devMode } = settings;
+
+    await validateGitStatus(devMode);
+
+    await checkForUpdates();
+
+    await performUpdate();
+
+    await installGitHook();
+
+    await initializeSubmodules();
+
+    await createUpdateCommit(devMode);
+
+  } catch (error) {
+
+    console.log(
+      chalk.red(
+        error?.message || error
+      )
+    );
+
+    process.exit(1);
+  }
+}
+
+/* -------------------------- */
+/* Settings */
+/* -------------------------- */
+
+async function prepareSettings(
+  newRemote
+) {
+
+  const settings = readSettings();
 
   if (newRemote) {
-    let settings = readSettings();
+
     settings.remote = newRemote;
+
     writeSettings(settings);
   }
 
-  const devMode = readSettings().devMode;
-  
-  // (1) Ensure all changes saved
-  if (!devMode) {
-    const statusSummary = await git.status()
-    if (statusSummary.files.length) {
-      console.log(UNCOMMITTED_FILES_BEFORE_UPDATE_MESSAGE);
-      process.exit(1);
-    }
-  }
-
-  // (2) Look for update
-  if (await isLatestVersion()) {
-    console.log(chalk.yellow("Questplay is up-to-date.\n"));
-    process.exit(0);
-  }
-
-  // (3) Pull update
-  await pullUpdate();
-
-  // (4) Update pre-commit hook
-  const hookFile = path.join(process.cwd(), "hooks", "pre-commit");
-  fs.copyFileSync(hookFile, "./.git/hooks/pre-commit");
-
-  // (5) Install dependencies and forge-std submodule
-  await git.submoduleUpdate(["--init", "--recursive"]);
-
-  console.log();
-
-  try {
-    
-    if (!devMode) {
-      await git.add("--all");
-      await git.commit(`Update Questplay to ${await remoteVersion()}`);
-      console.log(chalk.green("\nUpdate committed.\n"));
-    }
-
-  } catch (err) {
-
-    console.log(chalk.grey("\ngit commit failed. Try manually committing the Questplay update.\n"));
-    process.exit(0);
-
-  }
-
+  return settings;
 }
 
-async function pullUpdate() {
+/* -------------------------- */
+/* Validation */
+/* -------------------------- */
 
-  console.log(chalk.green("\nUpdating Questplay..."));
+async function validateGitStatus(
+  devMode
+) {
 
-  const authDownloader = new QuestDownloader();
+  if (devMode) {
+    return;
+  }
 
-  const remoteBranch = readSettings().remote;
-  const options = remoteBranch == undefined ? {} : { sha: remoteBranch };
+  const status = await git.status();
 
-  await authDownloader.downloadQuestplay(options);
+  if (status.files.length > 0) {
 
-  console.log(chalk.green("\nInstalling Questplay..."));
-  await authDownloader.installSubpackage();
+    console.log(
+      UNCOMMITTED_FILES_BEFORE_UPDATE_MESSAGE
+    );
+
+    process.exit(1);
+  }
+}
+
+async function checkForUpdates() {
+
+  const latest =
+    await isLatestVersion();
+
+  if (latest) {
+
+    console.log(
+      chalk.yellow(
+        "Questplay is up-to-date.\n"
+      )
+    );
+
+    process.exit(0);
+  }
+}
+
+/* -------------------------- */
+/* Update Process */
+/* -------------------------- */
+
+async function performUpdate() {
+
+  console.log(
+    chalk.green(
+      "\nUpdating Questplay..."
+    )
+  );
+
+  const downloader =
+    new QuestDownloader();
+
+  const remoteBranch =
+    readSettings().remote;
+
+  const options =
+    remoteBranch
+      ? { sha: remoteBranch }
+      : {};
+
+  await downloader.downloadQuestplay(
+    options
+  );
+
+  console.log(
+    chalk.green(
+      "\nInstalling Questplay..."
+    )
+  );
+
+  await downloader.installSubpackage();
+}
+
+async function installGitHook() {
+
+  const sourceHook = path.join(
+    process.cwd(),
+    "hooks",
+    "pre-commit"
+  );
+
+  const targetHook = path.join(
+    process.cwd(),
+    ".git",
+    "hooks",
+    "pre-commit"
+  );
+
+  if (!fs.existsSync(sourceHook)) {
+
+    throw new Error(
+      "Pre-commit hook file not found."
+    );
+  }
+
+  fs.copyFileSync(
+    sourceHook,
+    targetHook
+  );
+
+  console.log(
+    chalk.green(
+      "\nPre-commit hook updated."
+    )
+  );
+}
+
+async function initializeSubmodules() {
+
+  console.log(
+    chalk.green(
+      "\nUpdating submodules..."
+    )
+  );
+
+  await git.submoduleUpdate([
+    "--init",
+    "--recursive",
+  ]);
+}
+
+/* -------------------------- */
+/* Git Commit */
+/* -------------------------- */
+
+async function createUpdateCommit(
+  devMode
+) {
+
+  if (devMode) {
+    return;
+  }
+
+  try {
+
+    const version =
+      await remoteVersion();
+
+    await git.add("--all");
+
+    await git.commit(
+      `Update Questplay to ${version}`
+    );
+
+    console.log(
+      chalk.green(
+        "\nUpdate committed.\n"
+      )
+    );
+
+  } catch (error) {
+
+    console.log(
+      chalk.grey(
+        "\nGit commit failed. Please commit the Questplay update manually.\n"
+      )
+    );
+  }
 }
