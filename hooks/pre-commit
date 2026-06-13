@@ -1,3 +1,4 @@
+#precommit 
 #!/bin/sh
 echo "$(dirname $0)/../../hooks/precommit.js"
 node "$(dirname $0)/../../hooks/precommit.js"
